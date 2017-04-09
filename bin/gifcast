@@ -1,0 +1,112 @@
+#!/bin/sh
+#
+# wfleming 2017
+#
+# Acknowledgment to pbrisbin for an older take on this that prompted writing
+# this.
+#
+# Deps: recordmydesktop, ffmpeg, xorg-xwininfo, xrectsel
+#
+###
+set -e
+
+
+########### BEGIN Function defs ###########
+message() {
+  cat << EOF
+Usage: gifcast [options]...
+
+  When no flag specifying what to record (i.e. -a or -w) is passed, gifcast
+  will prompt you to select an area of your screen to record with your mouse.
+
+  Options:
+
+          -a       Record your entire screen.
+
+          -w       Select a specific window to record with your mouse.
+
+          -s N     Scale the final gif to width N. For larger recordings, this
+                   can help keep size down. Default is to not scale at all.
+
+          -f N     Set the FPS of the final gif. Default is 15.
+
+          -o FILE  Write the final GIF to the specified file. If not specified,
+                   the final GIF will be a timestamped file in $HOME.
+
+          -h       Show this help message.
+EOF
+}
+
+# args: ogvfile record_opts
+record() {
+  # shellcheck disable=SC2086
+  recordmydesktop --no-frame --no-sound --delay 2 $2 -o "$1"
+}
+
+# args tmpdir ogvfile fps scale final
+post_process() {
+  #Generate palette for better quality
+  ffmpeg -i "$2" -loglevel error \
+    -vf "fps=$3,scale=$4:-1:flags=lanczos,palettegen" \
+    "$1/palette.png"
+
+  #Generate gif using palette
+  ffmpeg -i "$2" -i "$1/palette.png" -loglevel error -loop 0 \
+    -filter_complex "fps=$3,scale=$4:-1:flags=lanczos[x];[x][1:v]paletteuse" \
+    "$5"
+
+  rm -r "$1"
+}
+########### END Function defs ###########
+
+########### BEGIN Env setup / Arg processing ###########
+fps=15
+scalewidth=-1
+final="$HOME/gifcast_$(date +%y%m%d%H%M%S).gif"
+
+record_opts="default"
+while getopts ":was:f:o:h" opt; do
+  case $opt in
+    a)
+      echo "Will record your entire screen"
+      record_opts=""
+      ;;
+    w)
+      echo "Select window to record"
+      record_opts="--windowid $(xwininfo | grep "Window id" | cut -d " " -f 4)"
+      ;;
+    s)
+      scalewidth="$OPTARG"
+      ;;
+    f)
+      fps="$OPTARG"
+      ;;
+    o)
+      final="$OPTARG"
+      ;;
+    h)
+      message
+      exit 0
+      ;;
+    "?")
+      printf "Invalid option: -%s\n" "$OTPARG" >&2
+      message >&2
+      exit 64
+      ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$record_opts" = "default" ]; then
+  echo "Select area to record"
+  record_opts="$(xrectsel "-x %x -y %y --width %w --height %h")"
+fi
+
+tmp=$(mktemp -d -t gifcast.XXXX)
+########### END Env setup / Arg processing ###########
+
+printf "Recording %s. Press Ctl-Alt-s when done.\n" "$final"
+record "$tmp/out.ogv" "$record_opts"
+printf "Converting ogv to gif...\n"
+post_process "$tmp" "$tmp/out.ogv" "$fps" "$scalewidth" "$final"
+printf "Done! Your gif is at %s.\n" "$final"
